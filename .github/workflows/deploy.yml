@@ -1,0 +1,74 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Setup site
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DEPLOY_KEY" > ~/.ssh/id_key
+          chmod 600 ~/.ssh/id_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/id_key -o StrictHostKeyChecking=no" \
+            git clone --recursive git@github.com:cal-mods/extras.git _extras_src
+          (
+            cd _extras_src
+            npm install @napi-rs/canvas
+            wget https://raw.githubusercontent.com/Kidev/TCOAALBrowserLoader/refs/heads/main/build-tomb-mod.js
+            for tomb_dir in tomb-*/; do
+              [ -d "$tomb_dir" ] || continue
+              mod="$(basename "$tomb_dir")"
+              mod="${mod#tomb-}"
+              node build-tomb-mod.js --diff "tomb-$mod" --base base-2_0_14 --out "$mod"
+            done
+            rm -rf tomb-*
+            rm -rf base-*
+            rm -rf node_modules build-tomb-mod.js package.json package-lock.json
+          )
+          mkdir -p _site/mods
+          > _site/mods/mods.txt
+          for mod_dir in _extras_src/*/; do
+            mod_name=$(basename "$mod_dir")
+            [ -d "$mod_dir" ] || continue
+            [[ "$mod_name" == _* ]] && continue
+            cp -r "$mod_dir" "_site/mods/$mod_name"
+            echo "$mod_name" >> _site/mods/mods.txt
+          done
+          rm -rf _extras_src ~/.ssh/id_key
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+          retention-days: 1
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+
+      - name: Delete artifact
+        uses: geekyeggo/delete-artifact@v6
+        with:
+          name: github-pages
